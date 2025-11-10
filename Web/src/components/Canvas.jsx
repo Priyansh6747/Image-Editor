@@ -144,21 +144,34 @@ function Canvas({ imageUrl, onImageUpload, zoom, onZoomChange, selectedTool, onT
     const applyCrop = async ({ x, y, width, height }) => {
         if (!imgRef.current || !natural.w || !display.w) return;
 
+        // Calculate scale factors from display size to natural size
         const scaleX = natural.w / display.w;
         const scaleY = natural.h / display.h;
 
+        // Convert crop coordinates from display space to natural image space
         const sx = Math.max(0, Math.floor(x * scaleX));
         const sy = Math.max(0, Math.floor(y * scaleY));
         const sw = Math.min(natural.w - sx, Math.floor(width * scaleX));
         const sh = Math.min(natural.h - sy, Math.floor(height * scaleY));
 
+        // Ensure we have valid dimensions
+        if (sw <= 0 || sh <= 0) {
+            console.error('Invalid crop dimensions');
+            return;
+        }
+
         const src = imgRef.current;
+
+        // Create offscreen canvas at natural resolution
         const off = document.createElement('canvas');
-        off.width = Math.max(1, sw);
-        off.height = Math.max(1, sh);
+        off.width = sw;
+        off.height = sh;
         const ctx = off.getContext('2d');
+
+        // Draw cropped portion
         ctx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
 
+        // Convert to data URL and update image
         const dataUrl = off.toDataURL('image/png');
         onImageChange(dataUrl);
         onToolReset?.();
