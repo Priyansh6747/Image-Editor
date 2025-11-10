@@ -1,4 +1,5 @@
 import { Crop, Palette, Sliders, Type, Lock } from 'lucide-react';
+import PropTypes from 'prop-types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip'; // Assuming path to shadcn/ui or similar components
 
 const tools = [
