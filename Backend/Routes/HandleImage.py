@@ -20,90 +20,57 @@ class LSBSteg:
         self.height, self.width, self.nbchannels = im.shape
         self.size = self.width * self.height
 
-        self.maskONEValues = [1, 2, 4, 8, 16, 32, 64, 128]
-        self.maskONE = self.maskONEValues.pop(0)
-
-        self.maskZEROValues = [254, 253, 251, 247, 239, 223, 191, 127]
-        self.maskZERO = self.maskZEROValues.pop(0)
-
-        self.curwidth = 0
-        self.curheight = 0
-        self.curchan = 0
-
-    def put_binary_value(self, bits):
-        for c in bits:
-            val = list(self.image[self.curheight, self.curwidth])
-            if int(c) == 1:
-                val[self.curchan] = int(val[self.curchan]) | self.maskONE
-            else:
-                val[self.curchan] = int(val[self.curchan]) & self.maskZERO
-
-            self.image[self.curheight, self.curwidth] = tuple(val)
-            self.next_slot()
-
-    def next_slot(self):
-        if self.curchan == self.nbchannels - 1:
-            self.curchan = 0
-            if self.curwidth == self.width - 1:
-                self.curwidth = 0
-                if self.curheight == self.height - 1:
-                    self.curheight = 0
-                    if self.maskONE == 128:
-                        raise SteganographyException("No available slot remaining (image filled)")
-                    else:
-                        self.maskONE = self.maskONEValues.pop(0)
-                        self.maskZERO = self.maskZEROValues.pop(0)
-                else:
-                    self.curheight += 1
-            else:
-                self.curwidth += 1
-        else:
-            self.curchan += 1
-
-    def read_bit(self):
-        val = self.image[self.curheight, self.curwidth][self.curchan]
-        val = int(val) & self.maskONE
-        self.next_slot()
-        if val > 0:
-            return "1"
-        else:
-            return "0"
-
-    def read_byte(self):
-        return self.read_bits(8)
-
-    def read_bits(self, nb):
-        bits = ""
-        for i in range(nb):
-            bits += self.read_bit()
-        return bits
-
-    def byteValue(self, val):
-        return self.binary_value(val, 8)
-
-    def binary_value(self, val, bitsize):
-        binval = bin(val)[2:]
-        if len(binval) > bitsize:
-            raise SteganographyException("binary value larger than the expected size")
-        while len(binval) < bitsize:
-            binval = "0" + binval
-        return binval
+        # Flatten image for faster access
+        self.flat_image = im.reshape(-1)
+        self.max_bytes = len(self.flat_image) // 8
 
     def encode_binary(self, data):
-        l = len(data)
-        if self.width * self.height * self.nbchannels < l + 64:
+        data_len = len(data)
+
+        # Check capacity
+        if data_len > self.max_bytes - 8:
             raise SteganographyException("Carrier image not big enough to hold all the data")
-        self.put_binary_value(self.binary_value(l, 64))
-        for byte in data:
-            byte = byte if isinstance(byte, int) else ord(byte)
-            self.put_binary_value(self.byteValue(byte))
-        return self.image
+
+        # Convert length to 64-bit binary
+        len_bits = np.array([int(b) for b in format(data_len, '064b')], dtype=np.uint8)
+
+        # Convert data bytes to bits
+        data_bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
+
+        # Combine length and data bits
+        all_bits = np.concatenate([len_bits, data_bits])
+
+        # Get the pixel values we need to modify
+        num_bits = len(all_bits)
+        pixels = self.flat_image[:num_bits].copy()
+
+        # Clear LSBs and set new bits
+        # Much faster than loop: clear bit 0, then OR with new bit
+        pixels = (pixels & 0xFE) | all_bits
+
+        # Update the flattened image
+        self.flat_image[:num_bits] = pixels
+
+        # Reshape back to original shape
+        return self.flat_image.reshape(self.height, self.width, self.nbchannels)
 
     def decode_binary(self):
-        l = int(self.read_bits(64), 2)
-        output = b""
-        for i in range(l):
-            output += bytearray([int(self.read_byte(), 2)])
+        # Read length (first 64 bits)
+        len_pixels = self.flat_image[:64]
+        len_bits = len_pixels & 1
+        data_len = int(''.join(map(str, len_bits)), 2)
+
+        if data_len <= 0 or data_len > self.max_bytes:
+            return b""
+
+        # Read data bits
+        total_bits = data_len * 8
+        data_pixels = self.flat_image[64:64 + total_bits]
+        data_bits = data_pixels & 1
+
+        # Pack bits back to bytes
+        output = np.packbits(data_bits).tobytes()
+
         return output
 
 
@@ -154,7 +121,7 @@ async def check_capacity(
 
         # Calculate carrier capacity (in bytes)
         # 64 bits (8 bytes) reserved for storing data length
-        carrier_capacity = (carrier_w * carrier_h * carrier_c) - 8
+        carrier_capacity = (carrier_w * carrier_h * carrier_c // 8) - 8
 
         # Check if encoding is possible
         can_encode = secret_size <= carrier_capacity
@@ -219,14 +186,14 @@ async def encode_image(
 
         # Calculate capacity
         height, width, channels = carrier_img.shape
-        max_bytes = (width * height * channels) - 8  # 64 bits for length
+        max_bytes = (width * height * channels // 8) - 8  # 64 bits for length
 
         if len(secret_data) > max_bytes:
             raise HTTPException(
                 status_code=400,
                 detail=f"Secret image too large. Carrier can hold max {max_bytes} bytes ({round(max_bytes / 1024, 2)} KB), "
-                       f"but secret image is {len(secret_data)} bytes ({round(len(secret_data) / 1024, 2)} KB). "
-                       f"Try using a larger carrier image or compress the secret image."
+                f"but secret image is {len(secret_data)} bytes ({round(len(secret_data) / 1024, 2)} KB). "
+                f"Try using a larger carrier image or compress the secret image."
             )
 
         # Encode
@@ -296,7 +263,7 @@ async def decode_image(
             raise HTTPException(
                 status_code=400,
                 detail="Hidden data found but could not be decoded as an image. "
-                       "The hidden data might not be an image or may be corrupted."
+                "The hidden data might not be an image or may be corrupted."
             )
 
         # Re-encode in requested format
